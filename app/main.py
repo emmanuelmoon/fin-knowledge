@@ -18,12 +18,9 @@ from llama_index.core import (
 from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 
-# --- LlamaIndex Integrations ---
 from llama_index.readers.llama_parse import LlamaParse
-# --- ⬇️ GEMINI IMPORTS ⬇️ ---
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.llms.google_genai import GoogleGenAI
-# --- ⬆️ GEMINI IMPORTS ⬆️ ---
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 import qdrant_client
