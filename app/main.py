@@ -10,7 +10,6 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# --- LlamaIndex Core Imports ---
 from llama_index.core import (
     Settings,
     Document,
@@ -166,8 +165,6 @@ class QueryRequest(BaseModel):
     fiscal_year: int | None = None
     report_type: str | None = None
 
-# ...existing code...
-
 from llama_index.llms.google_genai import GoogleGenAI
 
 @app.post("/query/")
@@ -202,11 +199,9 @@ async def query_index(request: QueryRequest):
             response_mode="compact"
         )
 
-        # Get raw response from vector DB
         raw_response = await asyncio.to_thread(query_engine.query, request.query)
         raw_text = str(raw_response)
 
-        # Use Gemini to make the response readable
         gemini_llm = GoogleGenAI(model_name="gemini-1.5-pro-latest")
         prompt = (
             "You are a financial analyst assistant. Please read the following excerpt from a financial report and rewrite it for clarity and readability. "
@@ -225,7 +220,6 @@ async def query_index(request: QueryRequest):
         print(f"Error during query: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
-# ...existing code...
 
 if __name__ == "__main__":
     import uvicorn
