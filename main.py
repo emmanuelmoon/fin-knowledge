@@ -30,10 +30,10 @@ load_dotenv()
 if os.getenv("GOOGLE_API_KEY") is None:
     raise EnvironmentError("GOOGLE_API_KEY not found in .env file")
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+# QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = "financial_reports"
 
-qdrant_client = qdrant_client.QdrantClient(url=QDRANT_URL)
+qdrant_client = qdrant_client.QdrantClient(path="qdrant_data")
 
 parser = LlamaParse(
     api_key=os.getenv("LLAMA_PARSE_KEY"),

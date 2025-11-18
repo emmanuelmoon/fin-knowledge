@@ -7,3 +7,4 @@ llama-index-vector-stores-qdrant
 qdrant-client
 llama-index-llms-google-genai
 llama-index-embeddings-google-genai
+streamlit
