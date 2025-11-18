@@ -3,37 +3,33 @@ import asyncio
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Annotated, List
-from qdrant_client.http.models import VectorParams
+from typing import Annotated
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from llama_index.core import (
-    Settings,
-    Document,
-    VectorStoreIndex
-)
+from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
-
 from llama_index.readers.llama_parse import LlamaParse
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
-import qdrant_client
+from qdrant_client import QdrantClient
+from qdrant_client.models import VectorParams
 
 load_dotenv()
 
 if os.getenv("GOOGLE_API_KEY") is None:
     raise EnvironmentError("GOOGLE_API_KEY not found in .env file")
 
-# QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = "financial_reports"
 
-qdrant_client = qdrant_client.QdrantClient(path="qdrant_data")
+# Initialize Qdrant client
+qdrant = QdrantClient(url=os.getenv("QDRANT_URL"),
+                      api_key=os.getenv("QDRANT_API_KEY"))  # renamed from qdrant_client to avoid conflicts
 
 parser = LlamaParse(
     api_key=os.getenv("LLAMA_PARSE_KEY"),
@@ -46,44 +42,54 @@ Settings.llm = GoogleGenAI(model_name="gemini-1.5-pro-latest")
 Settings.embed_model = GoogleGenAIEmbedding(model_name="models/text-embedding-004")
 Settings.node_parser = MarkdownNodeParser(include_metadata=True, include_prev_next_rel=True)
 
-
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    """On startup, ensure the Qdrant collection exists."""
+    """Ensure Qdrant collection and field indexes exist on startup."""
     try:
-        qdrant_client.get_collection(collection_name=QDRANT_COLLECTION)
+        qdrant.get_collection(collection_name=QDRANT_COLLECTION)
         print(f"Collection '{QDRANT_COLLECTION}' already exists.")
     except Exception:
         print(f"Collection '{QDRANT_COLLECTION}' not found. Creating...")
-        qdrant_client.recreate_collection(
+        qdrant.recreate_collection(
             collection_name=QDRANT_COLLECTION,
-            vectors_config=VectorParams(
-                size=768,
-                distance="Cosine"
-            )
+            vectors_config=VectorParams(size=768, distance="Cosine")
         )
         print(f"Collection '{QDRANT_COLLECTION}' created.")
 
+    # Create field indexes for filtering
+    try:
+        qdrant.create_payload_index(
+            collection_name=QDRANT_COLLECTION,
+            field_name="company_name",
+            field_type="keyword"
+        )
+        qdrant.create_payload_index(
+            collection_name=QDRANT_COLLECTION,
+            field_name="report_type",
+            field_type="keyword"
+        )
+        qdrant.create_payload_index(
+            collection_name=QDRANT_COLLECTION,
+            field_name="fiscal_year",
+            field_type="integer"
+        )
 
-async def index_document_pipeline(
-    file_bytes: bytes,
-    file_name: str,
-    company_name: str,
-    report_type: str,
-    fiscal_year: int
-):
+        print("Field indexes created.")
+    except Exception as e:
+        print(f"Field index creation error: {e}")
+
+
+async def index_document_pipeline(file_bytes: bytes, file_name: str, company_name: str, report_type: str, fiscal_year: int):
     temp_pdf_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
             temp_pdf.write(file_bytes)
             temp_pdf_path = temp_pdf.name
 
-        print(f"Starting LlamaParse for {file_name}...")
         docs = await parser.aload_data(temp_pdf_path)
-        print("LlamaParse complete.")
-        
+
         doc_id = str(uuid.uuid4())
         for doc in docs:
             doc.metadata = {
@@ -95,34 +101,19 @@ async def index_document_pipeline(
             }
             doc.id_ = doc_id
 
-        print("Chunking documents into nodes...")
         nodes = await asyncio.to_thread(Settings.node_parser.get_nodes_from_documents, docs)
-        print(f"Created {len(nodes)} nodes.")
 
-        print("Connecting to vector store and indexing nodes...")
-        print("Creating QdrantVectorStore...")
         vector_store = QdrantVectorStore(
-            client=qdrant_client,
+            client=qdrant,
             collection_name=QDRANT_COLLECTION
         )
-        print("Created QdrantVectorStore.")
 
-        print("Creating VectorStoreIndex...")
-        index = await asyncio.to_thread(
-            VectorStoreIndex.from_vector_store,
-            vector_store=vector_store,
-        )
-        print("Created VectorStoreIndex.")
-
-        print("Inserting nodes...")
+        index = await asyncio.to_thread(VectorStoreIndex.from_vector_store, vector_store)
         await asyncio.to_thread(index.insert_nodes, nodes)
-        print("Inserted nodes.")
-        
-        print(f"Successfully indexed {len(nodes)} nodes for doc_id {doc_id}.")
+
         return doc_id, len(nodes)
 
     except Exception as e:
-        print(f"Error in pipeline: {e}")
         raise HTTPException(status_code=500, detail=f"Indexing failed: {e}")
     finally:
         if temp_pdf_path and os.path.exists(temp_pdf_path):
@@ -156,18 +147,16 @@ async def index_document(
         "nodes_added": nodes_added
     }
 
+
 class QueryRequest(BaseModel):
     query: str
     company_name: str | None = None
     fiscal_year: int | None = None
     report_type: str | None = None
 
-from llama_index.llms.google_genai import GoogleGenAI
 
 @app.post("/query/")
 async def query_index(request: QueryRequest):
-    print(f"Received query: {request.query}")
-    
     filters = []
     if request.company_name:
         filters.append(ExactMatchFilter(key="company_name", value=request.company_name))
@@ -177,18 +166,14 @@ async def query_index(request: QueryRequest):
         filters.append(ExactMatchFilter(key="report_type", value=request.report_type))
     
     metadata_filters = MetadataFilters(filters=filters)
-    print(f"Applying filters: {metadata_filters}")
 
     try:
         vector_store = QdrantVectorStore(
-            client=qdrant_client,
+            client=qdrant,
             collection_name=QDRANT_COLLECTION
         )
         
-        index = await asyncio.to_thread(
-            VectorStoreIndex.from_vector_store,
-            vector_store=vector_store
-        )
+        index = await asyncio.to_thread(VectorStoreIndex.from_vector_store, vector_store)
         
         query_engine = index.as_query_engine(
             filters=metadata_filters,
@@ -201,9 +186,9 @@ async def query_index(request: QueryRequest):
 
         gemini_llm = GoogleGenAI(model_name="gemini-1.5-pro-latest")
         prompt = (
-            "You are a financial analyst assistant. Please read the following excerpt from a financial report and rewrite it for clarity and readability. "
-            "Summarize key points, highlight important figures, and present the information in a way that is easy for a non-expert to understand. "
-            "Use bullet points or short paragraphs where helpful. Here is the excerpt:\n\n"
+            "You are a financial analyst assistant. Rewrite the following excerpt for clarity and readability, "
+            "summarize key points, highlight important figures, and make it easy for a non-expert. "
+            "Here is the excerpt:\n\n"
             f"{raw_text}"
         )
         readable_response = await asyncio.to_thread(gemini_llm.complete, prompt)
@@ -214,7 +199,6 @@ async def query_index(request: QueryRequest):
         }
 
     except Exception as e:
-        print(f"Error during query: {e}")
         raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
 
